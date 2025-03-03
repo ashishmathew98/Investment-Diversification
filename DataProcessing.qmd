@@ -1,0 +1,206 @@
+---
+title: "Data Collection"
+format: html
+---
+
+```{r include=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(quantmod)
+library(tidyquant)
+library(httr)
+library(jsonlite)
+library(rvest)
+```
+
+## Pricing Data
+Gather the tickers for all stocks in the S&P500 using Rvest
+```{r}
+# scrape list of stocks currently in the S&P 500
+sp500_url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+sp500_url = read_html(sp500_url)
+data = sp500_url |> 
+  html_element("table") |> 
+  html_table()
+colnames(data) = c('symbol','company','gics_sector','gics_sub_industry','headquarters','date_added','cik','founded')
+
+# create a list of tickers
+tickers = sort(data$symbol)
+data |> head()
+data |> write.csv(file = "sp500_list.csv", row.names = FALSE)
+```
+
+```{r}
+data = read.csv("./sp500_list.csv")
+data |> 
+  count(gics_sector) |> 
+  ggplot(aes(x=reorder(gics_sector,n),y=n))+
+  geom_bar(stat='identity')+
+  coord_flip()+
+  labs(title = "Count of S&P Stock by Sector",y="Count",x="Sector")
+```
+Pull data for 2 years, 202301 - 202406 is the training period, 
+202406-12 testing period
+
+```{r}
+# Add US Bond Index (AGG) and US Commodity Index (DBC) to list of tickers
+tickers = append(tickers,c('AGG','DBC'))
+```
+
+
+```{r}
+# get pricing data for all tickers between 202212-202412
+price_data = tq_get(
+  x=tickers,get='stock.prices',
+  from='2022-12-01',to='2024-12-31') |> 
+  write.csv(file = "price_data_raw.csv", row.names = FALSE)
+```
+
+```{r}
+# calculate percent monthly return and total monthly volume and keep only month end data
+price_data = read.csv(file = "./price_data_raw.csv")
+price_data$date = as_date(price_data$date)
+
+price_data = price_data |>
+  mutate(
+    yearmonth = year(date)*100+month(date), # date in yyyymm format
+    adjusted = round(adjusted, 2) # round adjusted price to 2 decimal places
+    ) |> 
+  group_by(symbol, yearmonth) |> 
+  mutate(
+    total_volume = sum(volume) # total volume of stock traded in a month
+    ) |> 
+  group_by(symbol) |> 
+  mutate(
+    next_day = lead(date)
+    ) |> 
+  filter(is.na(next_day) | month(next_day) != month(date)) |>  # keep only month end data
+  mutate(
+    return = round((adjusted/lag(adjusted) -1 ) * 100, 2) # monthly return
+  ) |> 
+  filter(!is.na(return)) |> 
+  select(symbol, date, adjusted, total_volume, return)
+
+price_data |> write.csv(file = "price_data_clean.csv", row.names = FALSE)
+```
+
+## News Data
+```{r}
+#nyt_api_keys <- list of API keys removed to ensure security
+api_index <- 1  # Start with the first API key
+begin_date <- as.Date("2022-12-01")  # Start Date
+query <- "stock"
+
+all_articles <- data.frame()  # Initialize as an empty dataframe
+count <- 0  # Month Counter
+while (count < 26) {  # Loop for 26 months
+  date1 <- begin_date %m+% months(count)
+  date_str_start <- format(date1, "%Y%m%d")
+  date_str_end <- format(date1 %m+% months(1) - days(1), "%Y%m%d")  # Last day of the month
+  
+  for (page in 0:99) { 
+    url <- paste0("https://api.nytimes.com/svc/search/v2/articlesearch.json?q=", query, 
+                  "&begin_date=", date_str_start,
+                  "&end_date=", date_str_end,
+                  "&page=", page,
+                  "&api-key=", nyt_api_keys[api_index])
+    
+    response <- GET(url)
+    
+    # Handle Rate Limit (429)
+    if (status_code(response) == 429) {
+      print("Rate limit exceeded! Switching API key...")
+      api_index <- api_index %% length(nyt_api_keys) + 1  # Switch to the next key
+      Sys.sleep(3)  # Wait briefly before retrying
+      response <- GET(url)
+    }
+    
+    # Check for errors
+    if (http_error(response)) {
+      print(paste("Error on page", page, "- skipping to next request"))
+      next
+    }
+
+    data <- fromJSON(content(response, as = "text", encoding = "UTF-8"))
+    articles <- data$response$docs
+    
+    if (length(articles) == 0) {
+      print("No more articles available. Moving to next month.")
+      break
+    }
+    
+    # Convert to a DataFrame and extract relevant fields
+    articles_df <- tibble(
+      abstract = articles$abstract,
+      pub_date = articles$pub_date,
+      snippet = articles$snippet,
+      keywords = articles$keywords,
+      source = articles$source,
+      news_desk = articles$news_desk,
+      section_name = articles$section_name,
+      web_url = articles$web_url,
+      document_type = articles$document_type,
+      type_of_material = articles$type_of_material
+    )
+    
+    # Store results
+    all_articles <- append(all_articles, list(articles_df))
+    
+    # NYT API limit: 5 requests per minute
+    Sys.sleep(12)
+  }
+  print(paste("Completed month:", count + 1))
+  count <- count + 1
+}
+
+
+final_data <- bind_rows(all_articles)
+
+cleaned_data <- final_data |>
+  mutate(keywords = sapply(keywords, function(x) paste(unlist(x), collapse = ", ")))|>
+  drop_na()
+
+write.csv(cleaned_data, "context_clawer.csv", row.names = FALSE)
+```
+
+```{r}
+context_clawer = read.csv("./context_clawer.csv")
+context_clawer |> 
+  group_by(source) |> 
+  count() |> 
+  arrange(n)
+```
+
+```{r}
+context_clawer |> 
+  filter(source == "The New York Times") |> 
+  group_by(news_desk) |> 
+  count() |> 
+  arrange(desc(n))
+```
+
+```{r}
+# Looked at articles in each category using Excel to determine relevance
+# Keep only categories in: Business, OpEd, NYTNow, Washington, SundayBusiness, Business Day
+context_clean = context_clawer |> 
+  mutate(
+    pub_date = as.Date(pub_date)
+  ) |> 
+  filter(
+    source == "The New York Times" &
+    news_desk %in% c("Business", "OpEd", "NYTNow", "Washington", "SundayBusiness", "Business Day") &
+    document_type == "article"
+  ) |> 
+  select(
+    pub_date,
+    abstract,
+    snippet,
+    keywords,
+    news_desk,
+    section_name,
+    web_url,
+    type_of_material)
+context_clean |> write.csv(file = "context_clean.csv", row.names = FALSE)
+```
+
+

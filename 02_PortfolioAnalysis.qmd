@@ -1,0 +1,164 @@
+---
+title: "02_PortfolioAnalysis"
+format: html
+---
+
+```{r echo=FALSE}
+library(tidyverse)
+library(quantmod)
+library(fpp2)
+library(forecast)
+#install.packages("fastDummies")
+library(fastDummies)
+library(ggcorrplot)
+```
+
+```{r}
+sp500_list = read.csv("./data/sp500_list.csv")
+price_data_clean = read.csv("./data/price_data_clean.csv") |> 
+  filter(date <= '2024-05-31')  # exclude test period 2H 2024
+price_data_clean |> head()
+```
+
+Finding uncorrelated industries
+```{r}
+price_data_clean |> 
+  left_join(y=sp500_list, by='symbol') |> 
+  group_by(gics_sector, date) |> 
+  summarise(return = mean(return)) |> 
+  pivot_wider(
+    names_from = 'gics_sector', 
+    names_prefix = 'sector_',
+    values_from = 'return', 
+    id_cols = 'date') |> 
+  select(starts_with('sector_'), -sector_NA) |> 
+  cor(use='complete.obs') |> 
+  ggcorrplot(
+    method = "square", 
+    type = "lower", 
+    lab = T, 
+    lab_size = 2,
+    colors = c("red","white","green"), 
+    show.legend = T)
+```
+Interesting to see Energy and IT stocks have a low correlation (0.03)
+
+```{r}
+return_summary = price_data_clean |> 
+  group_by(symbol) |> 
+  summarise(
+    avg_return = mean(return, na.rm = T),
+    sd_return = sd(return, na.rm = T),
+    avg_volume = mean(total_volume, na.rm = T),
+    sd_volume = sd(total_volume, na.rm = T)
+  ) |>   
+  left_join(y=sp500_list, by="symbol") |> 
+  mutate(
+    sharpe = (avg_return - 0.36) / sd_return, # monthly risk-free rate = 0.36%
+    company_age = 2025 - as.integer(substr(founded,1,4)),
+    years_public = 2025 - as.integer(substr(date_added,1,4))
+    ) |> 
+  select(symbol, company, gics_sector, company_age, years_public,
+         avg_return, avg_volume, sd_return, sd_volume, sharpe)
+return_summary |> arrange(desc(sharpe)) |> head()
+```
+
+Sector Characteristics
+```{r}
+return_summary |> 
+  group_by(gics_sector) |> 
+  summarise(
+    count = n(),
+    median_age = round(median(company_age, na.rm = T),2),
+    median_return = round(median(avg_return, na.rm = T),2),
+    median_sd = round(median(sd_return, na.rm = T),2),
+    median_sharpe = round(median(sharpe, na.rm = T),2)
+  ) |> 
+  arrange(desc(median_sharpe))
+```
+
+Look at top performers within certain industries, build portfolio to maximize risk-adjusted return
+
+```{r}
+return_summary |> 
+  filter(gics_sector == "Health Care") |> 
+  arrange(desc(sharpe))
+```
+
+**Equity**
+IT: DELL, NVDA, MU (Micron)
+Industrial: GE, UBER
+Financials: AXP, JPM
+Consumer Discretionary: AMZN, HLT
+Energy: TRGP
+Healthcare: LLY, BSX
+Utilities: NRG
+Broad Market: VOO (S&P500 ETF)
+**Alternative**
+Fixed Income: BND (Bond ETF)
+Commodities: GSG (Commodity ETF)
+
+```{r}
+tickers = c(
+  "DELL","NVDA", "MU",
+  "GE","UBER",
+  "AXP","JPM",
+  "AMZN","HLT",
+  "TRGP",
+  "LLY","BSX",
+  "NRG",
+  "VOO","BND","GSG"
+)
+
+portfolio_data = tq_get(
+  x = tickers, 
+  get = "stock.prices", 
+  from = "2022-12-31", 
+  to = "2024-12-31") |> 
+  select(symbol, date, adjusted) |> 
+  pivot_wider(
+    id_cols = "date",
+    values_from = "adjusted",
+    names_from = "symbol"
+  )
+
+portfolio_data |>
+  head()
+```
+
+```{r}
+sentiment_data = read.csv(file = "./data/investor_sentiment.csv") |> 
+  mutate(date = as.Date(date, format = "%m/%d/%Y"))
+sentiment_data |> head()
+```
+
+
+```{r}
+weight = 1 / length(tickers)
+equal_weight_portfolio = portfolio_data |> 
+  mutate(
+    eq_wgt_portfolio = weight * (
+      DELL + NVDA + MU +
+      GE + UBER +
+      AXP + JPM +
+      AMZN + HLT +
+      TRGP +
+      LLY + BSX +
+      NRG +
+      BND + GSG)) |> 
+  inner_join(y=sentiment_data, by='date') |> 
+  select(
+    date, 
+    eq_wgt_portfolio, 
+    VOO) |> 
+  rename(
+    price = eq_wgt_portfolio, 
+    market = VOO) |> 
+  mutate(
+    prev_day_price = lag(price),
+    prev_day_market = lag(market),
+    portfolio_return = 100*((price / prev_day_price) - 1),
+    market_return = 100*((market / prev_day_market) - 1)) |> 
+  filter(!is.na(prev_day_price))
+```
+

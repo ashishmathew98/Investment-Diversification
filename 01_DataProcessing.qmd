@@ -14,6 +14,7 @@ library(rvest)
 ```
 
 ## Pricing Data
+### Stocks in the S&P 500
 Gather the tickers for all stocks in the S&P500 using Rvest
 ```{r}
 # scrape list of stocks currently in the S&P 500
@@ -31,7 +32,7 @@ data |> write.csv(file = "sp500_list.csv", row.names = FALSE)
 ```
 
 ```{r}
-data = read.csv("./sp500_list.csv")
+data = read.csv("./data/sp500_list.csv")
 data |> 
   count(gics_sector) |> 
   ggplot(aes(x=reorder(gics_sector,n),y=n))+
@@ -43,22 +44,17 @@ Pull data for 2 years, 202301 - 202406 is the training period,
 202406-12 testing period
 
 ```{r}
-# Add US Bond Index (AGG) and US Commodity Index (DBC) to list of tickers
-tickers = append(tickers,c('AGG','DBC'))
-```
-
-
-```{r}
 # get pricing data for all tickers between 202212-202412
 price_data = tq_get(
   x=tickers,get='stock.prices',
   from='2022-12-01',to='2024-12-31') |> 
-  write.csv(file = "price_data_raw.csv", row.names = FALSE)
+  select(symbol, date, adjusted, volume) |> 
+  write.csv(file = "./data/stock_price_data_raw.csv", row.names = FALSE)
 ```
 
 ```{r}
 # calculate percent monthly return and total monthly volume and keep only month end data
-price_data = read.csv(file = "./price_data_raw.csv")
+price_data = read.csv(file = "./data/stock_price_data_raw.csv")
 price_data$date = as_date(price_data$date)
 
 price_data = price_data |>
@@ -81,7 +77,38 @@ price_data = price_data |>
   filter(!is.na(return)) |> 
   select(symbol, date, adjusted, total_volume, return)
 
-price_data |> write.csv(file = "price_data_clean.csv", row.names = FALSE)
+price_data |> write.csv(file = "./data/stock_price_data_clean.csv", row.names = FALSE)
+```
+
+### Popular ETFs
+```{r}
+tickers = c('VOO','BND','GSG') # S&P500, Bonds, Commodities
+tq_get(
+  x=tickers,get='stock.prices',
+  from='2022-12-01',to='2024-12-31') |> 
+  select(symbol, date, adjusted, volume) |> 
+  write.csv(file = "./data/etf_price_data_raw.csv")
+
+read.csv("./data/etf_price_data_raw.csv") |> 
+  mutate(
+    yearmonth = year(date)*100+month(date), # date in yyyymm format
+    adjusted = round(adjusted, 2) # round adjusted price to 2 decimal places
+    ) |> 
+  group_by(symbol, yearmonth) |> 
+  mutate(
+    total_volume = sum(volume) # total volume of stock traded in a month
+    ) |> 
+  group_by(symbol) |> 
+  mutate(
+    next_day = lead(date)
+    ) |> 
+  filter(is.na(next_day) | month(next_day) != month(date)) |>  # keep only month end data
+  mutate(
+    return = round((adjusted/lag(adjusted) -1 ) * 100, 2) # monthly return
+  ) |> 
+  filter(!is.na(return)) |> 
+  select(symbol, date, adjusted, total_volume, return) |> 
+  write.csv(file = "./data/etf_price_data_clean.csv", row.names = FALSE)
 ```
 
 ## News Data

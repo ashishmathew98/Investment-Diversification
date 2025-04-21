@@ -1,0 +1,244 @@
+---
+title: "Portfolio Analysis"
+author: "Ashish Mathew"
+format: html
+---
+
+```{r}
+#| include: false
+library(rvest)
+library(dplyr)
+library(quantmod)
+library(ggplot2)
+library(tidyquant)
+library(tidyr)
+library(ggcorrplot)
+library(quantreg)
+library(PerformanceAnalytics)
+library(quadprog)
+```
+
+## Market Analysis
+### Get Price Data
+```{r}
+# scrape list of stocks currently in the S&P 500
+sp500_url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+sp500_url = read_html(sp500_url)
+data = sp500_url |> 
+  html_element("table") |> 
+  html_table()
+colnames(data) = c('symbol','company','gics_sector','gics_sub_industry','headquarters','date_added','cik','founded')
+
+# create a list of tickers
+tickers = sort(data$symbol)
+data |> head()
+#data |> write.csv(file = "./data/sp500_list.csv", row.names = FALSE)
+```
+
+### Composition of the S&P500
+```{r}
+data |> 
+  count(gics_sector) |> 
+  ggplot(aes(x=reorder(gics_sector,n),y=n))+
+  geom_bar(stat='identity')+
+  coord_flip()+
+  labs(title = "S&P500 Stocks by Sector",y="Count",x="Sector")
+```
+
+The S&P500 which tracks the performance of the 500 largest companies in
+the US is weighted towards industrial, financial and technology stocks.
+
+```{r}
+price_data = tq_get(
+  x=tickers,get='stock.prices',
+  from='2023-01-01',to='2024-05-31') |> 
+  left_join(y = data, by = 'symbol') |> 
+  select(symbol, company, gics_sector, date_added, 
+         founded, date, adjusted, volume)
+
+price_data = price_data |> 
+  group_by(symbol) |> 
+  mutate(
+    daily_return = (adjusted / lag(adjusted)) - 1,
+    years_public = 2025 - as.integer(substr(date_added,1,4)),
+    company_age = 2025 - as.integer(substr(founded,1,4))
+  ) |> 
+  filter(!is.na(daily_return)) |> 
+  select(symbol, company, gics_sector, years_public, company_age,
+         date, adjusted, volume, daily_return)
+```
+
+### Sector Correlation Matrix
+```{r}
+price_data |> 
+  group_by(gics_sector, date) |>
+  summarise(avg_return = mean(daily_return)) |> 
+  pivot_wider(
+    id_cols = "date", 
+    names_from = "gics_sector", 
+    values_from = "avg_return") |> 
+  select(where(is.numeric)) |> 
+  cor(use = "complete.obs") |> 
+  ggcorrplot(
+    method = "square", 
+    type = "lower", 
+    lab = 1, 
+    lab_size = 2,
+    colors = c("red","white","green"),
+    title = "Sector Correlation Matrix")
+```
+
+From the correlation matrix, we can see that sectors like IT show a low
+correlation with sectors like Energy, Consumer Staples and Utilities.
+Historically this holds true since IT stocks are mainly growth stocks
+that benefit when interest rates are low meanwhile Energy, Consumer
+Staples and Utilities are more mature value stocks that have consistent
+performance regardless of the interest-rate environment.
+
+The risk of a specific stock can be influenced by several factors ranging from company specific risks to risks present in the country it operates in. Investors expect to be compensated for taking on additional risk with higher returns. 
+
+Modern Portfolio Theory, seeks to minimize the risk of a portfolio through diversification, i.e. by picking a basket of uncorrelated assets to minimize variance and maximize risk-adjusted return.
+
+$TotalRisk = Market Risk + IndustryRisk + Company Risk + CountryRisk$
+
+-   Industry and Company risk can be minimized by holding a broad range
+    of equities across various industries.
+-   Market risk can be minimized by holding non-equity instruments like
+    treasury bills and/or commodities like gold that act as a safe haven when markets are in decline.
+-   Country risk is a bit more complicated, some advocate for owning
+    companies that operate in different countries while critics point
+    out that large US firms conduct business and have supply chains
+    across geographies, so they should have low country specific risk.
+
+For simplicity, this analysis only looks at companies listed in the US market.
+
+```{r}
+price_data |> 
+  group_by(symbol, gics_sector) |> 
+  summarise(
+    avg_daily_return = mean(daily_return),
+    sd_daily_return = sd(daily_return)
+  ) |> 
+  mutate(
+    sharpe_ratio = avg_daily_return / sd_daily_return # Assume Risk-Free Rate of 0%
+  ) |> 
+  group_by(gics_sector) |> 
+  arrange(desc(sharpe_ratio), .by_group = T) |> 
+  slice_head(n = 4)
+```
+
+We can create a portfolio by selecting top-performers across a range of
+sectors. For this analysis we decided to construct a portfolio with the
+below equities and indices.
+
+**Equity** 
+IT: DELL, NVDA, MU (Micron) 
+
+Industrial: GE, UBER 
+
+Financials: AXP, JPM 
+
+Consumer Discretionary: AMZN, HLT 
+
+Energy: TRGP 
+
+Healthcare: LLY,BSX 
+
+Utilities: NRG 
+
+**Indices** 
+Fixed Income: BND (Bond ETF) 
+
+Commodities: GSG (Commodity ETF)
+
+## Portfolio Analysis
+### Get Price Data
+```{r}
+tickers = c(
+  "DELL","NVDA", "MU", # Tech
+  "GE","UBER", # Industrials
+  "AXP","JPM", # Financials
+  "AMZN","HLT", # Consumer Discretionary
+  "TRGP", # Energy
+  "LLY","BSX", # Health Care
+  "NRG", # Utilities
+  "BND","GSG" # Fixed-Income and Commodity ETFs
+)
+getSymbols(tickers, from = "2023-01-01", to = "2024-05-31")
+prices <- do.call(merge, lapply(tickers, function(t) Ad(get(t))))
+returns <- na.omit(Return.calculate(prices))
+
+tickers <- c("SPY") # S&P500 as benchmark
+getSymbols(tickers, from = "2023-01-01", to = "2024-05-31")
+spy_prices <- do.call(merge, lapply(tickers, function(t) Ad(get(t))))
+spy_returns <- na.omit(Return.calculate(spy_prices))
+```
+
+### Equal Weight Portfolio
+```{r}
+n_assets = ncol(returns)
+weights = rep(1 / n_assets, n_assets)
+
+portfolio_returns = Return.portfolio(returns, weights = weights)
+common_dates = index(portfolio_returns)[index(portfolio_returns) %in% index(spy_returns)]
+portfolio_returns_aligned = portfolio_returns[common_dates]
+spy_returns_aligned = spy_returns[common_dates]
+
+combined_returns= merge.xts(portfolio_returns_aligned, spy_returns_aligned)
+colnames(combined_returns) = c("Eq. Weight Portfolio", "S&P 500")
+
+chart.CumReturns(combined_returns,
+                 wealth.index = T,
+                 main = "Portfolio vs S&P500",
+                 legend.loc = "topleft")
+
+chart.Drawdown(combined_returns,
+               legend.loc = "bottomleft",
+               main = "Drawdowns")
+
+SharpeRatio.annualized(combined_returns, Rf = 0)
+```
+An equal weighted portfolio across sectors offers nearly twice the market return for similar draw down leading to a 2x difference in Sharpe Ratio (risk-adjusted return)
+
+### Minimum Variance Portfolio
+```{r}
+cov_matrix <- cov(returns)
+n_assets <- ncol(returns)
+
+# Dmat and dvec for quadprog (minimize (1/2) x' D x - d' x)
+Dmat <- 2 * cov_matrix
+dvec <- rep(0, n_assets)
+
+# Constraints: sum of weights = 1, weights >= 0 (no short selling)
+Amat <- cbind(rep(1, n_assets), diag(n_assets))
+bvec <- c(1, rep(0, n_assets))
+
+# Solve QP
+sol <- solve.QP(Dmat, dvec, Amat, bvec, meq = 1)
+
+# Optimal weights
+opt_weights <- sol$solution
+names(opt_weights) <- colnames(returns)
+portfolio_returns = Return.portfolio(returns, weights = opt_weights)
+
+common_dates = index(portfolio_returns)[index(portfolio_returns) %in% index(spy_returns)]
+
+portfolio_returns_aligned = portfolio_returns[common_dates]
+spy_returns_aligned = spy_returns[common_dates]
+
+combined_returns= merge.xts(portfolio_returns_aligned, spy_returns_aligned)
+colnames(combined_returns) = c("Portfolio", "S&P 500")
+
+chart.CumReturns(combined_returns,
+                 wealth.index = T,
+                 main = "Portfolio vs S&P500",
+                 legend.loc = "topleft")
+
+chart.Drawdown(combined_returns,
+               legend.loc = "bottomleft",
+               main = "Drawdowns")
+
+SharpeRatio.annualized(combined_returns, Rf = 0)
+```
+
+While the optimized portfolio has a lower annualized return, it also shows limited draw down, offering a less volatile growth rate compared to the broader market

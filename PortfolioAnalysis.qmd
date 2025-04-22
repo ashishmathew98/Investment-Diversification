@@ -155,23 +155,30 @@ Commodities: GSG (Commodity ETF)
 ### Get Price Data
 ```{r}
 tickers = c(
-  "DELL","NVDA", "MU", # Tech
-  "GE","UBER", # Industrials
-  "AXP","JPM", # Financials
-  "AMZN","HLT", # Consumer Discretionary
+  "DELL",
+  "NVDA",
+  "MU", # Tech
+  "GE",
+  "UBER", # Industrials
+  "AXP",
+  "JPM", # Financials
+  "AMZN",
+  "HLT", # Consumer Discretionary
   "TRGP", # Energy
-  "LLY","BSX", # Health Care
+  "LLY",
+  "BSX", # Health Care
   "NRG", # Utilities
-  "BND","GSG" # Fixed-Income and Commodity ETFs
+  "BND",
+  "GSG" # Fixed-Income and Commodity ETFs
 )
 getSymbols(tickers, from = "2023-01-01", to = "2024-05-31")
-prices <- do.call(merge, lapply(tickers, function(t) Ad(get(t))))
-returns <- na.omit(Return.calculate(prices))
+prices = do.call(merge, lapply(tickers, function(t) Ad(get(t))))
+returns = na.omit(Return.calculate(prices))
 
-tickers <- c("SPY") # S&P500 as benchmark
+tickers = c("SPY") # S&P500 as benchmark
 getSymbols(tickers, from = "2023-01-01", to = "2024-05-31")
-spy_prices <- do.call(merge, lapply(tickers, function(t) Ad(get(t))))
-spy_returns <- na.omit(Return.calculate(spy_prices))
+spy_prices = do.call(merge, lapply(tickers, function(t) Ad(get(t))))
+spy_returns = na.omit(Return.calculate(spy_prices))
 ```
 
 ### Equal Weight Portfolio
@@ -202,23 +209,22 @@ An equal weighted portfolio across sectors offers nearly twice the market return
 
 ### Minimum Variance Portfolio
 ```{r}
-cov_matrix <- cov(returns)
-n_assets <- ncol(returns)
+cov_matrix = cov(returns)
+n_assets = ncol(returns)
 
-# Dmat and dvec for quadprog (minimize (1/2) x' D x - d' x)
-Dmat <- 2 * cov_matrix
-dvec <- rep(0, n_assets)
+Dmat = 2 * cov_matrix
+dvec = rep(0, n_assets)
 
 # Constraints: sum of weights = 1, weights >= 0 (no short selling)
-Amat <- cbind(rep(1, n_assets), diag(n_assets))
-bvec <- c(1, rep(0, n_assets))
+Amat = cbind(rep(1, n_assets), diag(n_assets))
+bvec = c(1, rep(0, n_assets))
 
 # Solve QP
-sol <- solve.QP(Dmat, dvec, Amat, bvec, meq = 1)
+sol = solve.QP(Dmat, dvec, Amat, bvec, meq = 1)
 
 # Optimal weights
-opt_weights <- sol$solution
-names(opt_weights) <- colnames(returns)
+opt_weights = sol$solution
+names(opt_weights) = colnames(returns)
 portfolio_returns = Return.portfolio(returns, weights = opt_weights)
 
 common_dates = index(portfolio_returns)[index(portfolio_returns) %in% index(spy_returns)]
@@ -242,3 +248,69 @@ SharpeRatio.annualized(combined_returns, Rf = 0)
 ```
 
 While the optimized portfolio has a lower annualized return, it also shows limited draw down, offering a less volatile growth rate compared to the broader market
+
+### Risk Adjusted Risk Maximized Portfolio
+```{r}
+mean_returns = colMeans(returns)
+n_assets = ncol(returns)
+
+# Dummy Dmat and dvec for linear return optimization
+Dmat_dummy = diag(n_assets)
+dvec_dummy = rep(0, n_assets)
+
+Amat = cbind(
+  rep(1, n_assets),     # sum of weights = 1
+  diag(n_assets)        # weights >= 0
+)
+bvec = c(1, rep(0, n_assets))
+
+# Min return
+result_min = solve.QP(Dmat_dummy, -mean_returns, Amat, bvec, meq = 1)
+min_return = sum(mean_returns * result_min$solution)
+
+# Max return
+result_max = solve.QP(Dmat_dummy, mean_returns, Amat, bvec, meq = 1)
+max_return = sum(mean_returns * result_max$solution)
+
+cat("Feasible daily return range:", round(min_return, 4), "to", round(max_return, 4), "\n")
+```
+
+```{r}
+target_return = (min_return + max_return) / 2  # or set manually
+
+Dmat = 2 * cov(returns)
+dvec = rep(0, n_assets)
+
+Amat = cbind(
+  mean_returns,             # target return constraint
+  rep(1, n_assets),         # sum of weights = 1
+  diag(n_assets)            # no shorting
+)
+bvec = c(target_return, 1, rep(0, n_assets))
+
+result = solve.QP(Dmat, dvec, Amat, bvec, meq = 2)
+opt_weights = result$solution
+
+names(opt_weights) = colnames(returns)
+portfolio_returns = Return.portfolio(returns, weights = opt_weights)
+
+common_dates = index(portfolio_returns)[index(portfolio_returns) %in% index(spy_returns)]
+
+portfolio_returns_aligned = portfolio_returns[common_dates]
+spy_returns_aligned = spy_returns[common_dates]
+
+combined_returns= merge.xts(portfolio_returns_aligned, spy_returns_aligned)
+colnames(combined_returns) = c("Portfolio", "S&P 500")
+
+chart.CumReturns(combined_returns,
+                 wealth.index = T,
+                 main = "Portfolio vs S&P500",
+                 legend.loc = "topleft")
+
+chart.Drawdown(combined_returns,
+               legend.loc = "bottomleft",
+               main = "Drawdowns")
+
+SharpeRatio.annualized(combined_returns, Rf = 0)
+```
+

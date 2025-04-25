@@ -1,0 +1,100 @@
+---
+title: "Trading Sentiment"
+author: "Ashish Mathew"
+format: html
+---
+
+**Question:** Can we use short-term price and sentiment data to design a profitable trading strategy?
+
+```{r}
+#install.packages(c("tidyquant","quantmod"))
+library(quantmod)
+library(tidyquant)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(lubridate)
+```
+
+```{r}
+setwd("~/Documents/GitHub/Predictive-Modeling-Finance")
+spy = tq_get(
+  "SPY", 
+  get = "stock.prices", 
+  from = "2020-01-01", 
+  to = "2024-12-31")
+
+sentiment_data = read.csv("./data/investor_sentiment.csv") |> 
+  mutate(
+    Date = as.Date(Date, format = "%m/%d/%Y"),
+    Bullish = as.numeric(gsub("%", "", Bullish)),
+    Bearish = as.numeric(gsub("%", "", Bearish)))
+colnames(sentiment_data) = colnames(sentiment_data) |> str_to_lower()
+sentiment_data |> head()
+```
+Looking at prior week sentiment and most recent daily returns, can we decide to buy/sell for the upcoming week?
+```{r}
+data = spy |> 
+  left_join(y = sentiment_data, by = "date") |> 
+  mutate(sentiment = bullish - bearish) |> 
+  select(date, open, close, sentiment) |> 
+  mutate(
+    return = close / open, # today's return
+    return_1d = lag(return), # yesterday's return
+    return_3d = lag(return, n = 3),
+    return_5d = lag(return, n = 5),
+    next_day_open = lead(open),
+    next_week_close = lead(close, n = 5),
+    next_week_return = next_week_close / next_day_open,
+    target =  as.factor(case_when(next_week_return > 1 ~ 1, .default = 0)) # 1 if weekly return > 1 else 0
+    ) |> 
+  select(date, sentiment, starts_with('return'), next_week_return, target) |> 
+  drop_na()
+
+data |> head()
+```
+
+```{r}
+cutoff_date = "2023-12-31"
+train_data = data |> filter(date <= cutoff_date) |> select(-next_week_return, -date)
+test_data = data |> filter(date > cutoff_date) |> select(-next_week_return, -date)
+```
+
+```{r}
+train_data |> group_by(target) |> count()
+test_data |> group_by(target) |> count()
+```
+```{r}
+#baseline accuracy
+get_mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+mean(get_mode(train_data$target) == train_data$target)
+```
+
+57
+
+```{r}
+library(tidymodels)
+folds = vfold_cv(train_data, v = 3, strata = target)
+```
+
+```{r}
+lr_model = logistic_reg()
+
+lr_recipe = recipe(target ~ ., data = train_data) |> 
+  step_normalize(sentiment)
+
+lr_workflow = workflow() |> 
+  add_model(lr_model) |> 
+  add_recipe(lr_recipe)
+
+lr_results = fit_resamples(
+  lr_workflow,
+  folds,
+  metrics("accuracy"))
+
+collect_metrics(lr_results)
+```
+

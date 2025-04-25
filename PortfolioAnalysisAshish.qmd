@@ -113,6 +113,7 @@ $TotalRisk = Market Risk + IndustryRisk + Company Risk + CountryRisk$
 For simplicity, this analysis only looks at companies listed in the US market.
 
 ```{r}
+# Looking at top 4 stocks (based on Sharpe Ratio) in each GICS sector
 price_data |> 
   group_by(symbol, gics_sector) |> 
   summarise(
@@ -155,21 +156,21 @@ Commodities: GSG (Commodity ETF)
 ### Get Price Data
 ```{r}
 tickers = c(
-  "DELL",
-  "NVDA",
-  "MU", # Tech
-  "GE",
-  "UBER", # Industrials
-  "AXP",
-  "JPM", # Financials
-  "AMZN",
-  "HLT", # Consumer Discretionary
-  "TRGP", # Energy
-  "LLY",
-  "BSX", # Health Care
-  "NRG", # Utilities
-  "BND",
-  "GSG" # Fixed-Income and Commodity ETFs
+    "DELL",
+    "NVDA",
+    "MU", # Tech
+    "GE",
+    "UBER", # Industrials
+    "AXP",
+    "JPM", # Financials
+    "AMZN",
+    "HLT", # Consumer Discretionary
+    "TRGP", # Energy
+    "LLY",
+    "BSX", # Health Care
+    "NRG", # Utilities
+    "BND",
+    "GSG" # Fixed-Income and Commodity ETFs
 )
 getSymbols(tickers, from = "2023-01-01", to = "2024-05-31")
 prices = do.call(merge, lapply(tickers, function(t) Ad(get(t))))
@@ -185,11 +186,13 @@ spy_returns = na.omit(Return.calculate(spy_prices))
 ```{r}
 n_assets = ncol(returns)
 weights = rep(1 / n_assets, n_assets)
+equal_weights = weights
 
 portfolio_returns = Return.portfolio(returns, weights = weights)
 common_dates = index(portfolio_returns)[index(portfolio_returns) %in% index(spy_returns)]
 portfolio_returns_aligned = portfolio_returns[common_dates]
 spy_returns_aligned = spy_returns[common_dates]
+eq_weight_returns_aligned = portfolio_returns_aligned
 
 combined_returns= merge.xts(portfolio_returns_aligned, spy_returns_aligned)
 colnames(combined_returns) = c("Eq. Weight Portfolio", "S&P 500")
@@ -225,12 +228,14 @@ sol = solve.QP(Dmat, dvec, Amat, bvec, meq = 1)
 # Optimal weights
 opt_weights = sol$solution
 names(opt_weights) = colnames(returns)
+min_var_weights = opt_weights
 portfolio_returns = Return.portfolio(returns, weights = opt_weights)
 
 common_dates = index(portfolio_returns)[index(portfolio_returns) %in% index(spy_returns)]
 
 portfolio_returns_aligned = portfolio_returns[common_dates]
 spy_returns_aligned = spy_returns[common_dates]
+min_var_returns_aligned = portfolio_returns_aligned
 
 combined_returns= merge.xts(portfolio_returns_aligned, spy_returns_aligned)
 colnames(combined_returns) = c("Portfolio", "S&P 500")
@@ -249,7 +254,7 @@ SharpeRatio.annualized(combined_returns, Rf = 0)
 
 While the optimized portfolio has a lower annualized return, it also shows limited draw down, offering a less volatile growth rate compared to the broader market
 
-### Risk Adjusted Risk Maximized Portfolio
+### Risk Adjusted Return Maximized Portfolio
 ```{r}
 mean_returns = colMeans(returns)
 n_assets = ncol(returns)
@@ -272,11 +277,7 @@ min_return = sum(mean_returns * result_min$solution)
 result_max = solve.QP(Dmat_dummy, mean_returns, Amat, bvec, meq = 1)
 max_return = sum(mean_returns * result_max$solution)
 
-cat("Feasible daily return range:", round(min_return, 4), "to", round(max_return, 4), "\n")
-```
-
-```{r}
-target_return = (min_return + max_return) / 2  # or set manually
+target_return = (min_return + max_return) / 2
 
 Dmat = 2 * cov(returns)
 dvec = rep(0, n_assets)
@@ -290,14 +291,15 @@ bvec = c(target_return, 1, rep(0, n_assets))
 
 result = solve.QP(Dmat, dvec, Amat, bvec, meq = 2)
 opt_weights = result$solution
-
 names(opt_weights) = colnames(returns)
+max_sharpe_weights = opt_weights
 portfolio_returns = Return.portfolio(returns, weights = opt_weights)
 
 common_dates = index(portfolio_returns)[index(portfolio_returns) %in% index(spy_returns)]
 
 portfolio_returns_aligned = portfolio_returns[common_dates]
 spy_returns_aligned = spy_returns[common_dates]
+max_sr_returns_aligned = portfolio_returns_aligned
 
 combined_returns= merge.xts(portfolio_returns_aligned, spy_returns_aligned)
 colnames(combined_returns) = c("Portfolio", "S&P 500")
@@ -310,7 +312,95 @@ chart.CumReturns(combined_returns,
 chart.Drawdown(combined_returns,
                legend.loc = "bottomleft",
                main = "Drawdowns")
-
+opt_weights
 SharpeRatio.annualized(combined_returns, Rf = 0)
+```
+
+```{r}
+combined_returns = merge.xts(
+  spy_returns_aligned,
+  eq_weight_returns_aligned,
+  min_var_returns_aligned,
+  max_sr_returns_aligned)
+
+colnames(combined_returns) = c(
+  "S&P500",
+  "Eq. Wgt. Portfolio",
+  "Min. Var. Portfolio",
+  "Max Sharpe Portfolio")
+
+chart.CumReturns(combined_returns,
+                 wealth.index = T,
+                 main = "Portfolio vs S&P500",
+                 legend.loc = "topleft")
+
+chart.Drawdown(combined_returns,
+               legend.loc = "bottomleft",
+               main = "Drawdowns")
+
+SharpeRatio.annualized(combined_returns)
+```
+
+### Of of sample performance
+```{r}
+from = "2024-06-01"
+to = "2024-12-31"
+
+tickers = c(
+  "DELL",
+  "NVDA",
+  "MU", # Tech
+  "GE",
+  "UBER", # Industrials
+  "AXP",
+  "JPM", # Financials
+  "AMZN",
+  "HLT", # Consumer Discretionary
+  "TRGP", # Energy
+  "LLY",
+  "BSX", # Health Care
+  "NRG", # Utilities
+  "BND",
+  "GSG" # Fixed-Income and Commodity ETFs
+)
+
+getSymbols(tickers, from = from, to = to)
+prices = do.call(merge, lapply(tickers, function(t) Ad(get(t))))
+returns = na.omit(Return.calculate(prices))
+
+tickers = c("SPY") # S&P500 as benchmark
+getSymbols(tickers, from = from, to = to)
+spy_prices = do.call(merge, lapply(tickers, function(t) Ad(get(t))))
+spy_returns = na.omit(Return.calculate(spy_prices))
+```
+
+```{r}
+eq_weight_returns = Return.portfolio(returns, weights = equal_weights)
+min_var_returns = Return.portfolio(returns, weights = min_var_weights)
+max_sr_returns = Return.portfolio(returns, weights = max_sharpe_weights)
+
+combined_returns = merge.xts(
+  spy_returns,
+  eq_weight_returns,
+  min_var_returns,
+  max_sr_returns
+)
+
+colnames(combined_returns) = c(
+  "S&P500",
+  "Eq. Wgt. Portfolio",
+  "Min. Var. Portfolio",
+  "Max Sharpe Portfolio")
+
+chart.CumReturns(combined_returns,
+                 wealth.index = T,
+                 main = "Portfolio vs S&P500",
+                 legend.loc = "topleft")
+
+chart.Drawdown(combined_returns,
+               legend.loc = "bottomleft",
+               main = "Drawdowns")
+
+SharpeRatio.annualized(combined_returns)
 ```
 

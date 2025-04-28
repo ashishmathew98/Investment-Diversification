@@ -403,4 +403,227 @@ chart.Drawdown(combined_returns,
 
 SharpeRatio.annualized(combined_returns)
 ```
+## Sentiment Analysis
+```{r}
+data = read.csv("./data/Cole-sentiment-0417.csv")
+data$Date <- as.Date(data$Date,format="%m/%d/%Y")
+
+data$WeeklyHigh <- as.numeric(as.character(data$WeeklyHigh))
+data$WeeklyLow <- as.numeric(as.character(data$WeeklyLow))
+data$WeeklyClose <- as.numeric(as.character(data$WeeklyClose))
+
+data$Bullish <- as.numeric(as.character(data$Bullish))
+data$Neutral <- as.numeric(as.character(data$Neutral))
+data$Bearish <- as.numeric(as.character(data$Bearish))
+
+
+#install.packages('datetime')
+library('datetime')
+
+
+library(caret)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(mgcv)
+library(crayon)
+library("recipes")
+library(magrittr)
+library(zoo)
+
+
+library(PerformanceAnalytics)
+library(tidyquant)
+#install.packages('forecast')
+library(forecast)
+
+
+####STOCK TICKER DATA MERGE###############
+
+tickers = "META"
+sentiment = data[1:4] 
+
+colnames(sentiment) <- c("date","Bullish","Neutral","Bearish")
+
+price_data = tq_get(
+  x=tickers,get='stock.prices',
+  from='1987-07-24',to='2025-04-17') 
+
+stock <- left_join(sentiment, price_data, by = "date")
+stock <- stock[complete.cases(stock), ]
+
+
+returns <- ROC(stock$close, type = "discrete")
+returns <- returns[-1]
+#ret_demean <- returns - mean(returns)
+stockminus = stock[-1,]
+ret_demean <- returns
+returns2 <- cbind(stockminus,ret_demean)
+
+
+
+nrow(stock)*.75
+
+train = returns2[1:floor(nrow(returns2)*.85),]
+test = returns2[ceiling(nrow(returns2)*.85):nrow(returns2),]
+
+plot(train$ret_demean)
+
+last_train_value <- tail(train$close, 1)
+last_test_value <- tail(test$close, 1)
+
+############GAM MODEL#################
+
+model2=gam(formula = ret_demean ~ Bullish + Bearish, data = returns2)
+summary(model2)
+
+pred = predict(model2,newdata=test)
+rmse_train_rpart = sqrt(mean((pred[2] - test$ret_demean)^2)); rmse_train_rpart
+pred <- tibble(date = test[,1], ret_demean = pred)
+
+ggplot() +
+  geom_line(data = train, aes(x = date, y = ret_demean, color = "Training"))+
+  geom_line(data = test, aes(x = date, y = ret_demean, color = "Test")) +
+  geom_line(data = pred, aes(x = date, y = ret_demean, color = "Forecast"))+
+  scale_color_manual(name = "Data Type",values = c("Training" = "black","Test" = "red","Forecast" = "darkviolet"))+
+  labs(title = "GAM Model Returns - META", x = "Date", y = "Return")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+predicted_prices_simple <- last_train_value * cumprod(1 + pred[2])
+predicted_price_gam <- tibble(date = test[,1], gam = predicted_prices_simple)
+
+ggplot() +
+  geom_line(data = train, aes(x = date, y = close, color = "Training"))+
+  geom_line(data = test, aes(x = date, y = close, color = "Test")) +
+  geom_line(data = predicted_price_gam, aes(x = date, y = gam$ret_demean, color = "Forecast"))+
+  scale_color_manual(name = "Data Type",values = c("Training" = "black","Test" = "red","Forecast" = "darkviolet"))+
+  labs(title = "GAM Model Price - META", x = "Date", y = "Price")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+#######Gradient Boosting, gbm###########
+
+#install.packages('gbm')
+library(gbm)
+boost=gbm(formula = ret_demean ~ Bullish + Bearish + Neutral, data = train,
+          distribution="gaussian",
+          n.trees = 100,
+          interaction.depth = 3,
+          shrinkage = 0.081,
+          n.minobsinnode = 10)
+
+pred_train = predict(boost, newdata = test, n.trees=100)
+rmse_train_boost = sqrt(mean((pred_train - test$ret_demean)^2)); rmse_train_boost           
+
+summary(boost)
+row.names(pred_train)<- row.names(pred_train)
+
+boostforecast<- data.frame(date = test[,1],forecast = as.numeric(pred_train))
+
+
+#last_train_value <- tail(train$close, 1)
+#first_predicted_value <- boostforecast[1,2]
+#offset <- last_train_value - first_predicted_value
+#adj_boostfore <- boostforecast[2] + offset
+#adj_boostfore2 <- tibble(date = test[,1],Forecast =  adj_boostfore[,1])
+
+ggplot() +
+  geom_line(data = train, aes(x = date, y = ret_demean, color = "Training")) +
+  geom_line(data = test, aes(x = date, y = ret_demean, color = "Test")) +
+  geom_line(data = boostforecast, aes(x = date, y = forecast, color = "Forecast"))+
+  scale_color_manual(name = "Data Type",values = c("Training" = "black","Test" = "red","Forecast" = "blue"))+
+  labs(title = "Gradient Boost Model Returns - META", x = "Date", y = "Return")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+predicted_prices_simple <- last_train_value * cumprod(1 + boostforecast[2])
+predicted_price_gbm <- tibble(date = test[,1], gbm = predicted_prices_simple)
+
+ggplot() +
+  geom_line(data = train, aes(x = date, y = close, color = "Training"))+
+  geom_line(data = test, aes(x = date, y = close, color = "Test")) +
+  geom_line(data = predicted_price_gbm, aes(x = date, y = gbm$forecast, color = "Forecast"))+
+  scale_color_manual(name = "Data Type",values = c("Training" = "black","Test" = "red","Forecast" = "blue"))+
+  labs(title = "Gradient Boost Model Price - META", x = "Date", y = "Price")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+###rpart##################
+
+
+#install.packages('randomForest')
+library(randomForest)
+rfmodel <- randomForest(ret_demean ~ Bullish + Bearish + Neutral, data = train, ntree = 500)
+summary(rfmodel)
+
+pred_rf = predict(rfmodel, newdata = test, n.trees=100)
+rmse_train_rpart = sqrt(mean((pred_rf - test$ret_demean)^2)); rmse_train_rpart 
+
+summary(rfmodel)
+varImpPlot(rfmodel)
+
+
+row.names(pred_rf)<- row.names(test)
+
+rfforecast<- data.frame(date = test[,1],forecast = as.numeric(pred_rf))
+
+
+ggplot() +
+  geom_line(data = train, aes(x = date, y = ret_demean, color = "Training")) +
+  geom_line(data = test, aes(x = date, y = ret_demean, color = "Test")) +
+  geom_line(data = rfforecast, aes(x = date, y = forecast, color = "Forecast"))+
+  scale_color_manual(name = "Data Type",values = c("Training" = "black","Test" = "red","Forecast" = "darkgreen"))+
+  labs(title = "Random Forest Model Returns - META", x = "Date", y = "Return")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+predicted_prices_simple <- last_train_value * cumprod(1 + rfforecast[2])
+predicted_price_rf <- tibble(date = test[,1], gbm = predicted_prices_simple)
+
+ggplot() +
+  geom_line(data = train, aes(x = date, y = close, color = "Training"))+
+  geom_line(data = test, aes(x = date, y = close, color = "Test")) +
+  geom_line(data = predicted_price_rf, aes(x = date, y = gbm$forecast, color = "Forecast"))+
+  scale_color_manual(name = "Data Type",values = c("Training" = "black","Test" = "red","Forecast" = "darkgreen"))+
+  labs(title = "Random Forest Model Price - META", x = "Date", y = "Price")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+################AUTO ARIMA###################
+
+
+
+train2 = stock[1:floor(nrow(stock)*.85),]
+test2 = stock[ceiling(nrow(stock)*.85):nrow(stock),]
+
+
+price_xts <- xts(train2$close, order.by = train2$date)
+model3 = auto.arima(stock$close, lambda = 'auto', approximation = F, allowdrift = TRUE)
+summary(model3)
+
+
+
+
+
+forecast(model3,h=61)
+
+fs <- forecast(model3,h=nrow(test))
+
+forecast_values <- fs$mean
+#row.names(forecast_values)<- row.names(test)
+
+forecast<- data.frame(date = test[,1],forecast = as.numeric(forecast_values))
+
+last_train_value <- tail(train2$close, 1)
+first_predicted_value <- forecast[1,2]
+offset <- last_train_value - first_predicted_value
+AA_forecast <- forecast[2] + offset
+AA_forecast2 <- tibble(date = test[,1],Forecast =  AA_forecast[,1])
+
+
+
+ggplot() +
+  geom_line(data = train2, aes(x = date, y = close, color = "Training")) +
+  geom_line(data = test2, aes(x = date, y = close, color = "Test")) +
+  geom_line(data = AA_forecast2, aes(x = date, y = Forecast, color = "Forecast"))+
+  scale_color_manual(name = "Data Type",values = c("Training" = "black","Test" = "red","Forecast" = "blue"))+
+  labs(title = "ARIMA Model - META", x = "Date", y = "Price")+
+  theme(plot.title = element_text(hjust = 0.5))
+```
 

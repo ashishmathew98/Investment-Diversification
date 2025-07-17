@@ -16,6 +16,7 @@ However, we are still exposed to market risk since all stocks fall into the equi
 
 ## Portfolio Analysis
 As mentioned above, diversification is key to creating a portfolio with consistent returns. In our analysis, we decided to use the following financial instruments, which can be broadly classified into three main types: growth, value, and alternative assets.
+
 |Asset Class|Type|Name|
 |----|:----:|:----:|
 |Equity|Growth|Dell, Nvidia, Micron Technology, Uber, Amazon, Eli Lilly|
@@ -41,6 +42,7 @@ During the training period, the Equal Weight Portfolio and Max Sharpe Portfolio 
 ![alt text](./images/000013.png)
 
 We measured the Sharpe Ratio of all three portfolios and the S&P 500 to give an objective metric to complement the above charts.
+
 ||S&P500|Equal Weight|Minimum Variance|Maximum Sharpe|
 |---|:---:|:----:|:----:|:----:|
 |Sharpe Ratio|2.14|5.29|1.89|5.98|
